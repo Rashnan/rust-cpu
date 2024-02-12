@@ -16,6 +16,8 @@
 
 #[macro_use] extern crate enum_primitive;
 
+use std::sync::{Arc, Mutex};
+
 use bit::BitIndex;
 use enum_primitive::{enum_from_primitive, FromPrimitive};
 
@@ -30,26 +32,27 @@ enum_from_primitive!{
 
     #[derive(Debug, PartialEq)]
     pub enum MajorOpcodes {
-        Load = 0b00000,// I
-        LoadFp = 0b00001,// I
-        Store = 0b01000,// B
-        StoreFp = 0b01001,// B
+        J = 0b11001,
+        Jal = 0b11011,
+        Jalr = 0b11010,
+        Branch = 0b11000,
+        Load = 0b00000,
+        LoadFp = 0b00001,
+        Store = 0b01000,
+        StoreFp = 0b01001,
         Amo = 0b01010,
         OpImm = 0b00100,
         OpImm32 = 0b00110,
         Op = 0b01100,
         Op32 = 0b01110,
+        OpFp = 0b10100,
+
         MiscMem = 0b01011,
         Lui = 0b01101,
         MAdd = 0b10000,
         MSub = 0b10001,
         NMSub = 0b10010,
         NMAdd = 0b10011,
-        OpFp = 0b10100,
-        Branch = 0b11000,
-        J = 0b11001,
-        Jalr = 0b11010,
-        Jal = 0b11011,
         System = 0b11101
     }
 }
@@ -161,10 +164,23 @@ pub fn extract_j(inst: u32) -> InstJ {
 
 // module traits
 
-pub mod ext_i64 {
+pub mod modi64 {
+    use std::sync::{Arc, Mutex};
+
     use enum_primitive::FromPrimitive;
 
     use crate::*;
+
+    // all jalr instructions
+    enum_from_primitive!{
+        #[derive(Debug, PartialEq)]
+        pub enum InstJALR {
+            C,
+            R,
+            J,
+            RDNPC = 0b100
+        }
+    }
 
     // all load type instructions
     enum_from_primitive!{
@@ -258,33 +274,84 @@ pub mod ext_i64 {
         pub pc: u64,
 
         // user memory
-        pub mem: Vec<u64>,
+        pub mem: Arc<Mutex<Vec<u64>>>,
     }
 
     impl Module {
-        pub fn new() -> Self {
+        pub fn new(mem: Arc<Mutex<Vec<u64>>>) -> Self {
             Self {
                 regs: [0; 32],
                 pc: 0,
-                mem: Vec::with_capacity(256)
+                mem
             }
         }
+
+        pub fn jump(&mut self, inst: u32) {
+            let InstJ { off25, opcode: _ } = extract_j(inst);
+
+            self.pc = (self.pc as i128 + ((off25 as i64) << 1) as i128) as u64;
+        }
+
+        pub fn jal(&mut self, inst: u32) {
+            let InstJ { off25, opcode: _ } = extract_j(inst);
+
+            self.regs[1] = self.pc + 4;
+            self.pc = (self.pc as i128 + ((off25 as i64) << 1) as i128) as u64;
+        }
+
+        pub fn jalr(&mut self, inst: u32) {
+            let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode: _ } = extract_i(inst);
+
+            let imm12 = (imm_11_7 << 6 + imm_6_0) as u64;
+            let addr = self.regs[rs1] as u64 + imm12;
+
+            match InstJALR::from_u32(funct3).unwrap() {
+                InstJALR::C | InstJALR::R | InstJALR::J => {
+                    // C -- call subroutines
+                    // R - return from subroutines
+                    // J -- indirect jumps
+                    // virtually all the same
+
+                    if rd != 0 {
+                        // x0 will ignore ret dest
+                        self.regs[rd] = self.pc + 4;
+                    }
+                    self.pc = addr;
+                },
+                InstJALR::RDNPC => {
+                    if rd != 0 {
+                        self.regs[rd] = self.pc + 4;
+                    }
+                },
+            }
+        }
+
+        pub fn branch(&mut self, inst: u32) {
+
+        }
+        
 
         pub fn load(&mut self, inst: u32) {
             let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode: _ } = extract_i(inst);
 
+            if rd == 0 {
+                return;
+            }
+
             let imm12 = (imm_11_7 << 6 + imm_6_0) as usize;
             let addr = self.regs[rs1] as usize + imm12;
+
+            let mem = self.mem.lock().unwrap();
             
             match InstLoad::from_u32(funct3).unwrap() {
-                InstLoad::LB => self.regs[rd] = self.mem[addr] as i8 as u64,
-                InstLoad::LH => self.regs[rd] = self.mem[addr] as i16 as u64,
-                InstLoad::LW => self.regs[rd] = self.mem[addr] as i32 as u64,
-                InstLoad::LD => self.regs[rd] = self.mem[addr] as i64 as u64,
+                InstLoad::LB => self.regs[rd] = mem[addr] as i8 as u64,
+                InstLoad::LH => self.regs[rd] = mem[addr] as i16 as u64,
+                InstLoad::LW => self.regs[rd] = mem[addr] as i32 as u64,
+                InstLoad::LD => self.regs[rd] = mem[addr] as i64 as u64,
 
-                InstLoad::LBU => self.regs[rd] = self.mem[addr] as u8 as u64,
-                InstLoad::LHU => self.regs[rd] = self.mem[addr] as u16 as u64,
-                InstLoad::LWU => self.regs[rd] = self.mem[addr] as u32 as u64,
+                InstLoad::LBU => self.regs[rd] = mem[addr] as u8 as u64,
+                InstLoad::LHU => self.regs[rd] = mem[addr] as u16 as u64,
+                InstLoad::LWU => self.regs[rd] = mem[addr] as u32 as u64,
             }
         }
 
@@ -294,16 +361,23 @@ pub mod ext_i64 {
             let imm12 = (imm_11_7 << 6 + imm_6_0) as usize;
             let addr = self.regs[rs1] as usize + imm12;
 
+            let mut mem = self.mem.lock().unwrap();
+
             match InstStore::from_u32(funct3).unwrap() {
-                InstStore::SB => self.mem[addr] &= self.regs[rs2] as i8 as u64,
-                InstStore::SH => self.mem[addr] &= self.regs[rs2] as i16 as u64,
-                InstStore::SW => self.mem[addr] &= self.regs[rs2] as i32 as u64,
-                InstStore::SD => self.mem[addr] &= self.regs[rs2] as i64 as u64,
+                InstStore::SB => mem[addr] &= self.regs[rs2] as i8 as u64,
+                InstStore::SH => mem[addr] &= self.regs[rs2] as i16 as u64,
+                InstStore::SW => mem[addr] &= self.regs[rs2] as i32 as u64,
+                InstStore::SD => mem[addr] &= self.regs[rs2] as i64 as u64,
             }
         }
     
+
         pub fn op_imm(&mut self, inst: u32) {
             let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode: _ } = extract_i(inst);
+
+            if rd == 0 {
+                return;
+            }
 
             let imm12 = (imm_11_7 << 6 + imm_6_0) as u64;
 
@@ -335,6 +409,10 @@ pub mod ext_i64 {
         pub fn op_imm32(&mut self, inst: u32) {
             let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode: _ } = extract_i(inst);
 
+            if rd == 0 {
+                return;
+            }
+
             let imm12 = (imm_11_7 << 6 + imm_6_0) as u32;
 
             match InstOpImm32::from_u32(funct3).unwrap() {
@@ -357,11 +435,19 @@ pub mod ext_i64 {
         pub fn lui(&mut self, inst: u32) {
             let InstL { rd, lui20, opcode: _ } = extract_l(inst);
 
+            if rd == 0 {
+                return;
+            }
+
             self.regs[rd] |= (lui20 << 19) as u64;
         }
 
         pub fn op(&mut self, inst: u32) {
             let InstR { rd, rs1, rs2, funct10, opcode: _ } = extract_r(inst);
+
+            if rd == 0 {
+                return;
+            }
 
             match InstOp::from_u32(funct10.bit_range(0..3)).unwrap() {
                 InstOp::ADDx => {
@@ -394,6 +480,10 @@ pub mod ext_i64 {
         pub fn op32(&mut self, inst: u32) {
             let InstR { rd, rs1, rs2, funct10, opcode: _ } = extract_r(inst);
 
+            if rd == 0 {
+                return;
+            }
+
             match InstOp32::from_u32(funct10.bit_range(0..3)).unwrap() {
                 InstOp32::ADDx => {
                     if funct10.bit(10) {
@@ -419,7 +509,7 @@ pub mod ext_i64 {
     }
 }
 
-pub mod ext_a {
+pub mod moda {
     // todo!!
 
     pub struct Module {
@@ -428,15 +518,23 @@ pub mod ext_a {
 }
 
 pub struct Machine {
-    pub modi: Option<Box<ext_i64::Module>>,
-    pub moda: Option<Box<ext_a::Module>>
+    pub modi: Option<Box<modi64::Module>>,
+    pub moda: Option<Box<moda::Module>>,
+
+    pub ram: Arc<Mutex<Vec<u64>>>,
+    pub mem: Arc<Mutex<Vec<u64>>>,
 }
 
 impl Machine {
     pub fn new() -> Self {
+        let ram = Arc::new(Mutex::new(Vec::with_capacity(256)));
+        let mem = Arc::new(Mutex::new(Vec::with_capacity(1024)));
+
         Self {
-            modi: Some(Box::new(ext_i64::Module::new())),
-            moda: None
+            modi: Some(Box::new(modi64::Module::new(mem.clone()))),
+            moda: None,
+            ram,
+            mem,
         }
     }
 
