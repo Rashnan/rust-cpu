@@ -32,15 +32,15 @@ enum_from_primitive!{
     pub enum MajorOpcodes {
         Load = 0b00000,// I
         LoadFp = 0b00001,// I
-        OpImm = 0b00100,
-        OpImm32 = 0b00110,
         Store = 0b01000,// B
         StoreFp = 0b01001,// B
         Amo = 0b01010,
-        MiscMem = 0b01011,
+        OpImm = 0b00100,
+        OpImm32 = 0b00110,
         Op = 0b01100,
-        Lui = 0b01101,
         Op32 = 0b01110,
+        MiscMem = 0b01011,
+        Lui = 0b01101,
         MAdd = 0b10000,
         MSub = 0b10001,
         NMSub = 0b10010,
@@ -159,8 +159,9 @@ pub fn extract_j(inst: u32) -> InstJ {
     }
 }
 
-pub mod rv128i {
-    use bit::BitIndex;
+// module traits
+
+pub mod ext_i64 {
     use enum_primitive::FromPrimitive;
 
     use crate::*;
@@ -169,15 +170,13 @@ pub mod rv128i {
     enum_from_primitive!{
         #[derive(Debug, PartialEq)]
         pub enum InstLoad {
-            LB,
-            LH,
-            LW,
-            LD,
-            LQ,
-            LBU,
-            LHU,
-            LWU,
-            LDU,
+            LB = 0x0,
+            LH = 0b1,
+            LW = 0b10,
+            LD = 0b11,
+            LBU = 0b100,
+            LHU = 0b101,
+            LWU = 0b110,
         }
     }
 
@@ -189,7 +188,56 @@ pub mod rv128i {
             SH,
             SW,
             SD,
-            SQ
+        }
+    }
+
+    // all op-imm type instructions
+    enum_from_primitive!{
+        #[derive(Debug, PartialEq)]
+        pub enum InstOpImm {
+            ADDI,
+            SLLI,
+            SLTI,
+            SLTIU,
+            XORI,
+            SRxI,
+            ORI,
+            ANDI,
+        }
+    }
+
+    // all op-imm-32 type instructions
+    enum_from_primitive!{
+        #[derive(Debug, PartialEq)]
+        pub enum InstOpImm32 {
+            ADDIW,
+            SLLIW,
+            SRxIW = 0b101,
+        }
+    }
+
+    // all op type instructions
+    enum_from_primitive!{
+        #[derive(Debug, PartialEq)]
+        pub enum InstOp {
+            ADDx,
+            SLL,
+            SLT,
+            SLTU,
+            XOR,
+            SRx,
+            OR,
+            AND,
+        }
+    }
+
+    // all op-32 type instructions
+    enum_from_primitive!{
+        #[derive(Debug, PartialEq)]
+        pub enum InstOp32 {
+            ADDx,
+            SLL,
+            SRx,
         }
     }
 
@@ -206,11 +254,11 @@ pub mod rv128i {
         // x10 - x17 or a0 - a7 -- fn arg regs
         // x8, x9, x18 - x27 or s0 - s11 -- saved regs for preserving vals across fn calls
         // x28 - x31 or t3 - t6 -- additional temp regs
-        pub regs: [u128; 32],
-        pub pc: u128,
+        pub regs: [u64; 32],
+        pub pc: u64,
 
         // user memory
-        pub mem: Vec<u128>,
+        pub mem: Vec<u64>,
     }
 
     impl Module {
@@ -223,46 +271,173 @@ pub mod rv128i {
         }
 
         pub fn load(&mut self, inst: u32) {
-            let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode } = extract_i(inst);
-            let addr = self.regs[rs1] as usize + (imm_11_7 << 6 + imm_6_0) as usize;
+            let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode: _ } = extract_i(inst);
+
+            let imm12 = (imm_11_7 << 6 + imm_6_0) as usize;
+            let addr = self.regs[rs1] as usize + imm12;
             
             match InstLoad::from_u32(funct3).unwrap() {
-                InstLoad::LB => self.regs[rd] = self.mem[addr] as i8 as u128,
-                InstLoad::LH => self.regs[rd] = self.mem[addr] as i16 as u128,
-                InstLoad::LW => self.regs[rd] = self.mem[addr] as i32 as u128,
-                InstLoad::LD => self.regs[rd] = self.mem[addr] as i64 as u128,
-                InstLoad::LQ => self.regs[rd] = self.mem[addr] as i128 as u128,
+                InstLoad::LB => self.regs[rd] = self.mem[addr] as i8 as u64,
+                InstLoad::LH => self.regs[rd] = self.mem[addr] as i16 as u64,
+                InstLoad::LW => self.regs[rd] = self.mem[addr] as i32 as u64,
+                InstLoad::LD => self.regs[rd] = self.mem[addr] as i64 as u64,
 
-                InstLoad::LBU => self.regs[rd] = self.mem[addr] as u8 as u128,
-                InstLoad::LHU => self.regs[rd] = self.mem[addr] as u16 as u128,
-                InstLoad::LWU => self.regs[rd] = self.mem[addr] as u32 as u128,
-                InstLoad::LDU => self.regs[rd] = self.mem[addr] as u64 as u128,
+                InstLoad::LBU => self.regs[rd] = self.mem[addr] as u8 as u64,
+                InstLoad::LHU => self.regs[rd] = self.mem[addr] as u16 as u64,
+                InstLoad::LWU => self.regs[rd] = self.mem[addr] as u32 as u64,
             }
         }
 
         pub fn store(&mut self, inst: u32) {
-            let InstB { imm_11_7, rs1, rs2, imm_6_0, funct3, opcode } = extract_b(inst);
+            let InstB { imm_11_7, rs1, rs2, imm_6_0, funct3, opcode: _ } = extract_b(inst);
 
-            let addr = self.regs[rs1] as usize + (imm_11_7 << 6 + imm_6_0) as usize;
+            let imm12 = (imm_11_7 << 6 + imm_6_0) as usize;
+            let addr = self.regs[rs1] as usize + imm12;
 
             match InstStore::from_u32(funct3).unwrap() {
-                InstStore::SB => self.mem[addr] &= self.regs[rs2] as i8 as u128,
-                InstStore::SH => self.mem[addr] &= self.regs[rs2] as i16 as u128,
-                InstStore::SW => self.mem[addr] &= self.regs[rs2] as i32 as u128,
-                InstStore::SD => self.mem[addr] &= self.regs[rs2] as i64 as u128,
-                InstStore::SQ => self.mem[addr] &= self.regs[rs2] as i128 as u128,
+                InstStore::SB => self.mem[addr] &= self.regs[rs2] as i8 as u64,
+                InstStore::SH => self.mem[addr] &= self.regs[rs2] as i16 as u64,
+                InstStore::SW => self.mem[addr] &= self.regs[rs2] as i32 as u64,
+                InstStore::SD => self.mem[addr] &= self.regs[rs2] as i64 as u64,
+            }
+        }
+    
+        pub fn op_imm(&mut self, inst: u32) {
+            let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode: _ } = extract_i(inst);
+
+            let imm12 = (imm_11_7 << 6 + imm_6_0) as u64;
+
+            match InstOpImm::from_u32(funct3).unwrap() {
+                InstOpImm::ADDI => self.regs[rd] = self.regs[rs1] + imm12,
+                
+                InstOpImm::SLTI => self.regs[rd] = if (self.regs[rs1] as i64) < (imm12 as i64) { 1 } else { 0 },
+                InstOpImm::SLTIU => self.regs[rd] = if self.regs[rs1] < imm12 { 1 } else { 0 },
+
+                InstOpImm::XORI => self.regs[rd] = self.regs[rs1] ^ imm12,
+                InstOpImm::ORI => self.regs[rd] = self.regs[rs1] | imm12,
+                InstOpImm::ANDI => self.regs[rd] = self.regs[rs1] & imm12,
+
+                InstOpImm::SLLI => self.regs[rd] = self.regs[rs1] << imm12.bit_range(0..6),
+                InstOpImm::SRxI => {
+                    // bit 0 to 5 used as shift (max shift = 2 ^ (5+1) - 1 ~ 61)
+                    if imm12.bit(6) {
+                        // arithmetic
+                        self.regs[rd] = (self.regs[rs1] as i64 >> imm12.bit_range(0..6)) as u64
+                    }
+                    else {
+                        // logical
+                        self.regs[rd] = self.regs[rs1] as u64 >> imm12.bit_range(0..6)
+                    }
+                },
+            }
+        }
+
+        pub fn op_imm32(&mut self, inst: u32) {
+            let InstI { rd, rs1, imm_11_7, imm_6_0, funct3, opcode: _ } = extract_i(inst);
+
+            let imm12 = (imm_11_7 << 6 + imm_6_0) as u32;
+
+            match InstOpImm32::from_u32(funct3).unwrap() {
+                InstOpImm32::ADDIW => self.regs[rd] = (self.regs[rs1] as u32 + imm12) as u64,
+                InstOpImm32::SLLIW => self.regs[rd] = ((self.regs[rs1] as u32) << imm12.bit_range(0..6)) as u64,
+                InstOpImm32::SRxIW => {
+                    // bit 0 to 5 used as shift (max shift = 2 ^ (5+1) - 1 ~ 61)
+                    if imm12.bit(6) {
+                        // arithmetic
+                        self.regs[rd] = (self.regs[rs1] as i32 >> imm12.bit_range(0..6)) as u64
+                    }
+                    else {
+                        // logical
+                        self.regs[rd] = (self.regs[rs1] as u32 >> imm12.bit_range(0..6)) as u64
+                    }
+                },
+            }
+        }
+
+        pub fn lui(&mut self, inst: u32) {
+            let InstL { rd, lui20, opcode: _ } = extract_l(inst);
+
+            self.regs[rd] |= (lui20 << 19) as u64;
+        }
+
+        pub fn op(&mut self, inst: u32) {
+            let InstR { rd, rs1, rs2, funct10, opcode: _ } = extract_r(inst);
+
+            match InstOp::from_u32(funct10.bit_range(0..3)).unwrap() {
+                InstOp::ADDx => {
+                    if funct10.bit(10) {
+                        self.regs[rd] = self.regs[rs1] - self.regs[rs2]
+                    }
+                    else {
+                        self.regs[rd] = self.regs[rs1] + self.regs[rs2]
+                    }
+                },
+                InstOp::SLL => self.regs[rd] = self.regs[rs1] << self.regs[rs2].bit_range(0..6),
+                InstOp::SLT => self.regs[rd] = if (self.regs[rs1] as i64) < (self.regs[rs2] as i64) { 1 } else { 0 },
+                InstOp::SLTU => self.regs[rd] = if self.regs[rs1] < self.regs[rs2] { 1 } else { 0 },
+                InstOp::XOR => self.regs[rd] = self.regs[rs1] ^ self.regs[rs2],
+                InstOp::SRx => {
+                    if funct10.bit(10) {
+                        // arithmetic
+                        self.regs[rd] = ((self.regs[rs1] as i64) >> (self.regs[rs2].bit_range(0..6) as i64)) as u64
+                    }
+                    else {
+                        // logical
+                        self.regs[rd] = self.regs[rs1] >> self.regs[rs2].bit_range(0..6)
+                    }
+                },
+                InstOp::OR => self.regs[rd] = self.regs[rs1] | self.regs[rs2],
+                InstOp::AND => self.regs[rd] = self.regs[rs1] & self.regs[rs2],
+            }
+        }
+
+        pub fn op32(&mut self, inst: u32) {
+            let InstR { rd, rs1, rs2, funct10, opcode: _ } = extract_r(inst);
+
+            match InstOp32::from_u32(funct10.bit_range(0..3)).unwrap() {
+                InstOp32::ADDx => {
+                    if funct10.bit(10) {
+                        self.regs[rd] = (self.regs[rs1] as i32 - self.regs[rs2] as i32) as u64
+                    }
+                    else {
+                        self.regs[rd] = (self.regs[rs1] as i32 + self.regs[rs2] as i32) as u64
+                    }
+                },
+                InstOp32::SLL => self.regs[rd] = self.regs[rs1] << self.regs[rs2].bit_range(0..5),
+                InstOp32::SRx => {
+                    if funct10.bit(10) {
+                        // arithmetic
+                        self.regs[rd] = ((self.regs[rs1] as i64) >> (self.regs[rs2].bit_range(0..5) as i64)) as u64
+                    }
+                    else {
+                        // logical
+                        self.regs[rd] = self.regs[rs1] >> self.regs[rs2].bit_range(0..5)
+                    }
+                },
             }
         }
     }
 }
 
+pub mod ext_a {
+    // todo!!
+
+    pub struct Module {
+
+    }
+}
+
 pub struct Machine {
-    pub modi: Option<rv128i::Module>
+    pub modi: Option<Box<ext_i64::Module>>,
+    pub moda: Option<Box<ext_a::Module>>
 }
 
 impl Machine {
     pub fn new() -> Self {
-        Self { modi: Some(rv128i::Module::new()) }
+        Self {
+            modi: Some(Box::new(ext_i64::Module::new())),
+            moda: None
+        }
     }
 
     pub fn process(&mut self, inst: u32) {
@@ -279,8 +454,14 @@ impl Machine {
         if opcode.bit_range(0..6) & ABOVE32B != ABOVE32B {
             todo!("32b+ instructions...");
         }
-
+        
         match MajorOpcodes::from_u32(opcode).unwrap() {
+            // control transfer
+            MajorOpcodes::J => todo!(),
+            MajorOpcodes::Jal => todo!(),
+            MajorOpcodes::Jalr => todo!(),
+            MajorOpcodes::Branch => todo!(),
+            
             // load
             MajorOpcodes::Load => {
                 if let Some(modi) = &mut self.modi {
@@ -298,28 +479,41 @@ impl Machine {
             MajorOpcodes::StoreFp => unimplemented!(),
 
             // atomic memory operations
-
-            MajorOpcodes::OpImm => todo!(),
-            MajorOpcodes::OpImm32 => todo!(),
             MajorOpcodes::Amo => todo!(),
+
+            MajorOpcodes::OpImm => {
+                if let Some(modi) = &mut self.modi {
+                    modi.op_imm(inst);
+                }
+            },
+            MajorOpcodes::OpImm32 => {
+                if let Some(modi) = &mut self.modi {
+                    modi.op_imm32(inst);
+                }
+            },
+            MajorOpcodes::Lui => {
+                if let Some(modi) = &mut self.modi {
+                    modi.lui(inst);
+                }
+            },
+            MajorOpcodes::Op => {
+                if let Some(modi) = &mut self.modi {
+                    modi.op(inst);
+                }
+            },
+            MajorOpcodes::Op32 => {
+                if let Some(modi) = &mut self.modi {
+                    modi.op32(inst);
+                }
+            },
+            
             MajorOpcodes::MiscMem => todo!(),
-            MajorOpcodes::Op => todo!(),
-            MajorOpcodes::Lui => todo!(),
-            MajorOpcodes::Op32 => todo!(),
             MajorOpcodes::MAdd => todo!(),
             MajorOpcodes::MSub => todo!(),
             MajorOpcodes::NMSub => todo!(),
             MajorOpcodes::NMAdd => todo!(),
             MajorOpcodes::OpFp => todo!(),
             MajorOpcodes::System => todo!(),
-            
-            // control transfer
-            MajorOpcodes::J => todo!(),
-            MajorOpcodes::Jal => todo!(),
-            MajorOpcodes::Jalr => todo!(),
-            MajorOpcodes::Branch => todo!(),
-
-            _ => panic!("Unknowwn Opcode")
         }
         
         // match major_opcode {
