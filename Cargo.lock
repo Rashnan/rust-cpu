@@ -42,8 +42,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-cpu"
-version = "0.1.0"
+name = "rust_cpu"
+version = "0.1.1"
 dependencies = [
  "bit",
  "enum_primitive",

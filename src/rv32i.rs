@@ -1,19 +1,27 @@
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use bit::BitIndex;
-use enum_primitive::enum_from_primitive;
+use enum_primitive::{enum_from_primitive, FromPrimitive};
 
-use crate::rvcore::MemRW;
+use crate::rvcore::{EeiCore, MemRW};
 
 type XTYPE = u32;
-const XLEN: usize = 32;
+type ITYPE = i32;
+// const XLEN: usize = 32;
 
 // common instruction types
 
+// full instruction into xtype
+pub trait InstXType {
+    fn to_xtype(&self) -> XTYPE;
+}
+
+// just the immediate as xtype
 pub trait InstImm {
     fn imm(&self) -> XTYPE;
 }
 
+#[derive(Debug)]
 pub struct InstR {
     pub opcode: XTYPE,
     pub rd: XTYPE,
@@ -23,6 +31,13 @@ pub struct InstR {
     pub funct7: XTYPE
 }
 
+impl InstXType for InstR {
+    fn to_xtype(&self) -> XTYPE {
+        self.opcode + (self.rd << 7) + (self.funct3 << 12) + (self.rs1 << 15) + (self.rs2 << 20) + (self.funct7 << 25)
+    }
+}
+
+#[derive(Debug)]
 pub struct InstI {
     pub opcode: XTYPE,
     pub rd: XTYPE,
@@ -31,12 +46,19 @@ pub struct InstI {
     pub imm_11_0: XTYPE
 }
 
+impl InstXType for InstI {
+    fn to_xtype(&self) -> XTYPE {
+        self.opcode + (self.rd << 7) + (self.funct3 << 12) + (self.rs1 << 15) + (self.imm_11_0 << 20)
+    }
+}
+
 impl InstImm for InstI {
     fn imm(&self) -> XTYPE {
         self.imm_11_0
     }
 }
 
+#[derive(Debug)]
 pub struct InstS {
     pub opcode: XTYPE,
     pub imm_4_0: XTYPE,
@@ -46,12 +68,19 @@ pub struct InstS {
     pub imm_11_5: XTYPE
 }
 
-impl InstImm for InstS {
-    fn imm(&self) -> XTYPE {
-        self.imm_4_0 + self.imm_11_5 << 5
+impl InstXType for InstS {
+    fn to_xtype(&self) -> XTYPE {
+        self.opcode + (self.imm_4_0 << 7) + (self.funct3 << 12) + (self.rs1 << 15) + (self.rs2 << 20) + (self.imm_11_5 << 25)
     }
 }
 
+impl InstImm for InstS {
+    fn imm(&self) -> XTYPE {
+        self.imm_4_0 + (self.imm_11_5 << 5)
+    }
+}
+
+#[derive(Debug)]
 pub struct InstB {
     pub opcode: XTYPE,
     pub imm11: XTYPE,
@@ -63,17 +92,31 @@ pub struct InstB {
     pub imm_12: XTYPE
 }
 
-impl InstImm for InstB {
-    fn imm(&self) -> XTYPE {
-        self.imm_4_1 << 1 + self.imm_10_5 << 5 + self.imm11 << 11 + self.imm_12 << 12
+impl InstXType for InstB {
+    fn to_xtype(&self) -> XTYPE {
+        self.opcode + (self.imm11 << 7) + (self.imm_4_1 << 8) + (self.funct3 << 12) + (self.rs1 << 15) + (self.rs2 << 20) + (self.imm_10_5 << 25) + (self.imm_12 << 31)
     }
 }
 
+impl InstImm for InstB {
+    fn imm(&self) -> XTYPE {
+        (self.imm_4_1 << 1) + (self.imm_10_5 << 5) + (self.imm11 << 11) + (self.imm_12 << 12)
+    }
+}
+
+#[derive(Debug)]
 pub struct InstU {
     pub opcode: XTYPE,
     pub rd: XTYPE,
     pub imm_31_12: XTYPE
 }
+
+impl InstXType for InstU {
+    fn to_xtype(&self) -> XTYPE {
+        self.opcode + (self.rd << 7) + (self.imm_31_12 << 12)
+    }
+}
+
 
 impl InstImm for InstU {
     fn imm(&self) -> XTYPE {
@@ -81,6 +124,7 @@ impl InstImm for InstU {
     }
 }
 
+#[derive(Debug)]
 pub struct InstJ {
     pub opcode: XTYPE,
     pub rd: XTYPE,
@@ -90,9 +134,15 @@ pub struct InstJ {
     pub imm20: XTYPE
 }
 
+impl InstXType for InstJ {
+    fn to_xtype(&self) -> XTYPE {
+        self.opcode + (self.rd << 7) + (self.imm_19_12 << 12) + (self.imm11 << 20) + (self.imm_10_1 << 21) + (self.imm20 << 31)
+    }
+}
+
 impl InstImm for InstJ {
     fn imm(&self) -> XTYPE {
-        self.imm_10_1 << 1 + self.imm11 << 11 + self.imm_19_12 << 12 + self.imm20 << 20
+        (self.imm_10_1 << 1) + (self.imm11 << 11) + (self.imm_19_12 << 12) + (self.imm20 << 20)
     }
 }
 
@@ -128,14 +178,15 @@ impl Inst for XTYPE {
     }
 
     fn inst_s(&self) -> InstS {
-        InstS {
+        let ret = InstS {
             opcode: self.bit_range(0..7),
             imm_4_0: self.bit_range(7..12),
             funct3: self.bit_range(12..15),
             rs1: self.bit_range(15..20),
             rs2: self.bit_range(20..25),
             imm_11_5: self.bit_range(25..32)
-        }
+        };
+        ret
     }
 
     fn inst_b(&self) -> InstB {
@@ -171,22 +222,22 @@ impl Inst for XTYPE {
     }
 }
 
-// less common instruction variants
+// less common instruction derivatives
 
 pub struct InstFence {
-    opcode: XTYPE,
-    rd: XTYPE,
-    funct3: XTYPE,
-    rs1: XTYPE,
-    sw: bool,
-    sr: bool,
-    so: bool,
-    si: bool,
-    pw: bool,
-    pr: bool,
-    po: bool,
-    pi: bool,
-    fm: XTYPE
+    pub opcode: XTYPE,
+    pub rd: XTYPE,
+    pub funct3: XTYPE,
+    pub rs1: XTYPE,
+    pub sw: bool,
+    pub sr: bool,
+    pub so: bool,
+    pub si: bool,
+    pub pw: bool,
+    pub pr: bool,
+    pub po: bool,
+    pub pi: bool,
+    pub fm: XTYPE
 }
 
 pub trait InstFenceTrait {
@@ -200,13 +251,22 @@ impl InstFenceTrait for XTYPE {
             rd: self.bit_range(7..12),
             funct3: self.bit_range(12..15),
             rs1: self.bit_range(15..20),
-            sw
+            sw: self.bit(20),
+            sr: self.bit(21),
+            so: self.bit(22),
+            si: self.bit(23),
+            pw: self.bit(24),
+            pr: self.bit(25),
+            po: self.bit(26),
+            pi: self.bit(27),
+            fm: self.bit_range(28..32) as XTYPE
         }
     }
 }
 
 // opcodes
 
+// main
 enum_from_primitive!{
     pub enum Opcodes {
         Load        = 0b00000,
@@ -233,6 +293,66 @@ enum_from_primitive!{
     }
 }
 
+// branch
+enum_from_primitive!{
+    pub enum OpcodeBranch {
+        BEQ,
+        BNE,
+        BLT=0b100,
+        BGE,
+        BLTU,
+        BGEU
+    }
+}
+
+// load
+enum_from_primitive!{
+    pub enum OpcodeLoad {
+        LB,
+        LH,
+        LW,
+        LBU=0b100,
+        LHU
+    }
+}
+
+// store
+enum_from_primitive!{
+    pub enum OpcodeStore {
+        SB,
+        SH,
+        SW
+    }
+}
+
+// op imm
+enum_from_primitive!{
+    pub enum OpcodeOpImm {
+        ADDI,
+        SLTI=0b10,
+        SLTIU,
+        XORI=0b100,
+        ORI=0b110,
+        ANDI=0b111,
+        SLLI=0b001,
+        SXLI=0b101,
+    }
+}
+
+// op
+enum_from_primitive!{
+    pub enum OpcodeOp {
+        ADD,// and SUB
+        SLL,
+        SLT,
+        SLTU,
+        XOR,
+        SRX,
+        OR,
+        AND
+    }
+}
+
 // reference module
 
 pub struct RefMod {
@@ -255,32 +375,138 @@ pub struct RefMod {
     // byte addressed pc
     pub pc: XTYPE,
 
-    // handles
-    pub opcodes: Vec<Opcodes>,
+    // opcode traps
+    // pub traps: HashMap<u32, Box<Fn(&mut RefMod, u32)>>,
 
     // memory interface reference
-    pub mem: Rc<dyn MemRW>
+    pub mem: Rc<RefCell<dyn MemRW>>
 }
 
-impl RefMod {
-    pub fn new(mem: Rc<dyn MemRW>) -> Self {
+impl EeiCore for RefMod {
+    fn new(mem: Rc<RefCell<dyn MemRW>>) -> Self {
         Self { 
             regs: [0; 32],
             pc: 0,
-            opcodes: vec![
-                Opcodes::Lui,
-                Opcodes::Auipc,
-                Opcodes::Jal,
-                Opcodes::Jalr,
-                Opcodes::Branch,
-                Opcodes::Load,
-                Opcodes::Store,
-                Opcodes::OpImm,
-                Opcodes::Op,
-                Opcodes::MiscMem,
-                Opcodes::System
-            ],
             mem
+        }
+    }
+
+    fn trap(&mut self, inst: u32) -> bool {
+        let opcode = inst.bit_range(0..7);
+
+        match Opcodes::from_u32(opcode).unwrap() {
+            Opcodes::Lui => {
+                self.lui(inst.inst_u());
+                true
+            },
+            Opcodes::Auipc => {
+                self.auipc(inst.inst_u());
+                true
+            },
+            Opcodes::Jal => {
+                self.jal(inst.inst_j());
+                true
+            },
+            Opcodes::Jalr => {
+                self.jalr(inst.inst_i());
+                true
+            },
+            Opcodes::Branch => {
+                let inst = inst.inst_b();
+                match OpcodeBranch::from_u32(inst.funct3).unwrap() {
+                    OpcodeBranch::BEQ => self.beq(inst),
+                    OpcodeBranch::BNE => self.bne(inst),
+                    OpcodeBranch::BLT => self.blt(inst),
+                    OpcodeBranch::BGE => self.bge(inst),
+                    OpcodeBranch::BLTU => self.bltu(inst),
+                    OpcodeBranch::BGEU => self.bgeu(inst),
+                }
+                true
+            },
+            Opcodes::Load => {
+                let inst = inst.inst_i();
+                match OpcodeLoad::from_u32(inst.funct3).unwrap() {
+                    OpcodeLoad::LB => self.lb(inst),
+                    OpcodeLoad::LH => self.lh(inst),
+                    OpcodeLoad::LW => self.lw(inst),
+                    OpcodeLoad::LBU => self.lbu(inst),
+                    OpcodeLoad::LHU => self.lhu(inst),
+                }
+                true
+            },
+            Opcodes::Store => {
+                let inst = inst.inst_s();
+                match OpcodeStore::from_u32(inst.funct3).unwrap() {
+                    OpcodeStore::SB => self.sb(inst),
+                    OpcodeStore::SH => self.sh(inst),
+                    OpcodeStore::SW => self.sw(inst),
+                }
+                true
+            },
+            Opcodes::OpImm => {
+                let inst = inst.inst_i();
+                match OpcodeOpImm::from_u32(inst.funct3).unwrap() {
+                    OpcodeOpImm::ADDI => self.addi(inst),
+                    OpcodeOpImm::SLTI => self.slti(inst),
+                    OpcodeOpImm::SLTIU => self.sltiu(inst),
+                    OpcodeOpImm::XORI => self.xori(inst),
+                    OpcodeOpImm::ORI => self.ori(inst),
+                    OpcodeOpImm::ANDI => self.andi(inst),
+                    OpcodeOpImm::SLLI => self.slli(inst),
+                    OpcodeOpImm::SXLI => {
+                        if inst.imm_11_0.bit(11) {
+                            self.srai(inst)
+                        }
+                        else {
+                            self.srli(inst)
+                        }
+                    },
+                }
+                true
+            },
+            Opcodes::Op => {
+                let inst = inst.inst_r();
+                match OpcodeOp::from_u32(inst.funct3).unwrap() {
+                    OpcodeOp::ADD => {
+                        if inst.funct7.bit(6) {
+                            self.sub(inst)
+                        }
+                        else {
+                            self.add(inst)
+                        }
+                    },
+                    OpcodeOp::SLL => self.sll(inst),
+                    OpcodeOp::SLT => self.slt(inst),
+                    OpcodeOp::SLTU => self.sltu(inst),
+                    OpcodeOp::XOR => self.xor(inst),
+                    OpcodeOp::SRX => {
+                        if inst.funct7.bit(6) {
+                            self.sra(inst)
+                        }
+                        else {
+                            self.srl(inst)
+                        }
+                    },
+                    OpcodeOp::OR => self.or(inst),
+                    OpcodeOp::AND => self.add(inst),
+                }
+                true
+            },
+            Opcodes::MiscMem => {
+                self.fence(inst.inst_fence());
+                true
+            },
+            Opcodes::System => {
+                let inst = inst.inst_i();
+                if inst.imm_11_0.bit(0) {
+                    self.ebreak(inst)
+                }
+                else {
+                    self.ecall(inst)
+                }
+                true
+            },
+            _ => false
         }
     }
 }
@@ -344,9 +570,9 @@ pub trait RefTrait32 {
         [addi, slti, sltiu, xori, ori, andi] = InstI,// 0b0010011
         [slli, srli, srai] = InstI,// 0b0010011
         [add, sub, sll, slt, sltu, xor, srl, sra, or, and] = InstR,// 0b0110011
-        // fence=  Different...,// 0b0001111
-        // ecall=  Different...,// 0b1110011
-        // ebreak= Different...,// 0b1110011
+        fence=  InstFence,// 0b0001111
+        ecall=  InstI,// 0b1110011
+        ebreak= InstI,// 0b1110011
     );
 }
 
@@ -439,7 +665,7 @@ impl RefTrait32 for RefMod {
     }
 
     fn blt(&mut self, inst: InstB) {
-        if (inst.rs1 as i32) < (inst.rs2 as i32) {
+        if (inst.rs1 as ITYPE) < (inst.rs2 as ITYPE) {
             let off = inst.imm();
             if off & 0b11 != 0 {
                 // instruction-address-misaligned exception
@@ -450,7 +676,7 @@ impl RefTrait32 for RefMod {
     }
 
     fn bge(&mut self, inst: InstB) {
-        if (inst.rs1 as i32) >= (inst.rs2 as i32) {
+        if (inst.rs1 as ITYPE) >= (inst.rs2 as ITYPE) {
             let off = inst.imm();
             if off & 0b11 != 0 {
                 // instruction-address-misaligned exception
@@ -488,7 +714,7 @@ impl RefTrait32 for RefMod {
             todo!()
         }
         let addr = inst.rs1 + inst.imm();
-        self.regs[inst.rd as usize] = self.mem.read_u8(addr as usize) as i8 as XTYPE;
+        self.regs[inst.rd as usize] = self.mem.borrow().read_u8(addr as usize) as i8 as XTYPE;
     }
 
     fn lh(&mut self, inst: InstI) {
@@ -497,7 +723,7 @@ impl RefTrait32 for RefMod {
             todo!()
         }
         let addr = inst.rs1 + inst.imm();
-        self.regs[inst.rd as usize] = self.mem.read_u16(addr as usize) as i16 as XTYPE;
+        self.regs[inst.rd as usize] = self.mem.borrow().read_u16(addr as usize) as i16 as XTYPE;
     }
 
     fn lw(&mut self, inst: InstI) {
@@ -506,7 +732,7 @@ impl RefTrait32 for RefMod {
             todo!()
         }
         let addr = inst.rs1 + inst.imm();
-        self.regs[inst.rd as usize] = self.mem.read_u32(addr as usize) as i32 as XTYPE;
+        self.regs[inst.rd as usize] = self.mem.borrow().read_u32(addr as usize) as i32 as XTYPE;
     }
 
     fn lbu(&mut self, inst: InstI) {
@@ -515,7 +741,7 @@ impl RefTrait32 for RefMod {
             todo!()
         }
         let addr = inst.rs1 + inst.imm();
-        self.regs[inst.rd as usize] = self.mem.read_u8(addr as usize) as u8 as XTYPE;
+        self.regs[inst.rd as usize] = self.mem.borrow().read_u8(addr as usize) as u8 as XTYPE;
     }
 
     fn lhu(&mut self, inst: InstI) {
@@ -524,19 +750,19 @@ impl RefTrait32 for RefMod {
             todo!()
         }
         let addr = inst.rs1 + inst.imm();
-        self.regs[inst.rd as usize] = self.mem.read_u16(addr as usize) as u16 as XTYPE;
+        self.regs[inst.rd as usize] = self.mem.borrow().read_u16(addr as usize) as u16 as XTYPE;
     }
 
     fn sb(&mut self, inst: InstS) {
         let addr = inst.rs1 + inst.imm();
-        self.mem.write_u8(addr as usize, (self.regs[inst.rs2 as usize] & 0xff) as u8);
+        self.mem.borrow_mut().write_u8(addr as usize, (self.regs[inst.rs2 as usize] & 0xff) as u8);
     }
 
     fn sh(&mut self, inst: InstS) {
         let addr = inst.rs1 + inst.imm();
         let hw = (self.regs[inst.rs2 as usize] & 0xff) as u16 +
             (self.regs[inst.rs2 as usize] & (0xff << 8)) as u16;
-        self.mem.write_u16(addr as usize, hw);
+        self.mem.borrow_mut().write_u16(addr as usize, hw);
     }
 
     fn sw(&mut self, inst: InstS) {
@@ -545,82 +771,122 @@ impl RefTrait32 for RefMod {
             (self.regs[inst.rs2 as usize] & (0xff << 8)) as u32 + 
             (self.regs[inst.rs2 as usize] & (0xff << 16)) as u32 + 
             (self.regs[inst.rs2 as usize] & (0xff << 24)) as u32;
-        self.mem.write_u32(addr as usize, w);
+        self.mem.borrow_mut().write_u32(addr as usize, w);
     }
 
     fn addi(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("ADDI", inst.rd == 0 && (inst.rs1 != 0 || inst.imm() != 0));
+        self.regs[inst.rd as usize] = inst.imm() + self.regs[inst.rs1 as usize];
     }
 
     fn slti(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("SLTI", inst.rd == 0);
+        self.regs[inst.rd as usize] = if (self.regs[inst.rs1 as usize] as ITYPE) < (inst.imm() as ITYPE) { 1 } else { 0 };
     }
 
     fn sltiu(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("SLTIU", inst.rd == 0);
+        self.regs[inst.rd as usize] = if self.regs[inst.rs1 as usize] < inst.imm() { 1 } else { 0 };
     }
 
     fn xori(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("XORI", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] ^ inst.imm();
     }
 
     fn ori(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("ORI", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] | inst.imm();
     }
 
     fn andi(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("ANDI", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] & inst.imm();
     }
 
     fn slli(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("SLLI", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] << (inst.imm() & 0x1f);
     }
 
     fn srli(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("SRLI", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] >> (inst.imm() & 0x1f);
     }
 
     fn srai(&mut self, inst: InstI) {
-        todo!()
+        hint_if!("SRAI", inst.rd == 0);
+        self.regs[inst.rd as usize] = ((self.regs[inst.rs1 as usize] as ITYPE) >> (inst.imm() & 0x1f)) as XTYPE;
     }
 
     fn add(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("ADD", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] + self.regs[inst.rs2 as usize];
     }
 
     fn sub(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("SUB", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] - self.regs[inst.rs2 as usize];
     }
 
     fn sll(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("SLL", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] << self.regs[inst.rs2 as usize].bit_range(0..5);
     }
 
     fn slt(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("SLT", inst.rd == 0);
+        self.regs[inst.rd as usize] = if (self.regs[inst.rs1 as usize] as ITYPE) < (self.regs[inst.rs2 as usize] as ITYPE) { 1 } else { 0 };
     }
 
     fn sltu(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("SLTU", inst.rd == 0);
+        self.regs[inst.rd as usize] = if self.regs[inst.rs1 as usize] < self.regs[inst.rs2 as usize] { 1 } else { 0 };
     }
 
     fn xor(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("XOR", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] ^ self.regs[inst.rs2 as usize];
     }
 
     fn srl(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("SRL", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] >> self.regs[inst.rs2 as usize].bit_range(0..5);
     }
 
     fn sra(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("SRA", inst.rd == 0);
+        self.regs[inst.rd as usize] = ((self.regs[inst.rs1 as usize] as ITYPE) >> self.regs[inst.rs2 as usize].bit_range(0..5)) as XTYPE;
     }
 
     fn or(&mut self, inst: InstR) {
-        todo!()
+        hint_if!("OR", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] | self.regs[inst.rs2 as usize];
     }
 
     fn and(&mut self, inst: InstR) {
+        hint_if!("AND", inst.rd == 0);
+        self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] & self.regs[inst.rs2 as usize];
+    }
+
+    fn fence(&mut self, inst: InstFence) {
+        let pred = inst.pi | inst.po | inst.pr | inst.pw;
+        let succ = inst.si | inst.so | inst.sr | inst.sw;
+        hint_if!("Fence", !pred || !succ);
+        todo!();
+    }
+
+    fn ecall(&mut self, inst: InstI) {
+        // call trap
+        // EEI defines how to pass params
+        let _priv = inst.funct3;
+        todo!()
+    }
+
+    fn ebreak(&mut self, inst: InstI) {
+        // break out of trap
+        // EEI defines how to pass params
+        let _priv = inst.funct3;
         todo!()
     }
 }

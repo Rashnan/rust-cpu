@@ -1,25 +1,48 @@
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc, ops::Range};
 
 use crate::rv32i::RefMod;
 
-pub struct EEI {
+pub struct Eei {
     // main memory, or I/O
-    pub mem: Rc<MemMod>,
-    pub core: rv64i::RefMod,
+    pub mem: Rc<RefCell<MemMod>>,
+    pub core: RefMod,
 }
 
-impl EEI {
+impl Eei {
     pub fn new() -> Self {
-        let mem = Rc::new(MemMod::new());
+        let mem = Rc::new(RefCell::new(MemMod::new()));
         Self {
             mem: mem.clone(),
             core: RefMod::new(mem),
         }
     }
 
-    pub fn exec(&mut self) {
-
+    pub fn run(&mut self) {
+        while self.core.pc != u32::MAX {
+            self.exec()
+        }
     }
+
+    pub fn run_range(&mut self, rng: Range<u32>) {
+        while self.core.pc >= rng.start && self.core.pc < rng.end {
+            self.exec()
+        }
+    }
+
+    pub fn exec(&mut self) {
+        let inst = self.mem.borrow().read_u32(self.core.pc as usize);
+        println!("{:02} -- {:09}", self.core.pc, inst);
+        self.core.pc += 4;
+        if !self.core.trap(inst) {
+            // check other extensions
+            todo!()
+        }
+    }
+}
+
+pub trait EeiCore {
+    fn new(mem: Rc<RefCell<dyn MemRW>>) -> Self;
+    fn trap(&mut self, inst: u32) -> bool;
 }
 
 pub struct MemMod {
@@ -29,7 +52,7 @@ pub struct MemMod {
 impl MemMod {
     pub fn new() -> Self {
         Self {
-            data: Vec::with_capacity(4096)
+            data: vec![0; 4096]
         }
     }
 }
@@ -46,7 +69,7 @@ pub trait MemRW {
 
 // assume little endian
 // maybe add perm checks?
-// handling misalignment of addresses is on EEI
+// handling misalignment of addresses is on Eei
 impl MemRW for MemMod {
     fn read_u8(&self, addr: usize) -> u8 {
         self.data[addr]
@@ -59,7 +82,7 @@ impl MemRW for MemMod {
         }
 
         (self.data[addr] as u16) +
-        (self.data[addr + 1] as u16) << 8
+        ((self.data[addr + 1] as u16) << 8)
     }
 
     fn read_u32(&self, addr: usize) -> u32 {
@@ -69,9 +92,9 @@ impl MemRW for MemMod {
         }
 
         (self.data[addr] as u32) +
-        (self.data[addr + 1] as u32) << 8 +
-        (self.data[addr + 1] as u32) << 16 +
-        (self.data[addr + 1] as u32) << 24
+        ((self.data[addr + 1] as u32) << 8) +
+        ((self.data[addr + 2] as u32) << 16) +
+        ((self.data[addr + 3] as u32) << 24)
     }
 
     fn write_u8(&mut self, addr: usize, val: u8) {
@@ -84,8 +107,8 @@ impl MemRW for MemMod {
             todo!()
         }
 
-        self.data[addr] = (val & 0xff) as u8;
-        self.data[addr + 1] = (val & 0xff00) as u8;
+        self.data[addr] = val as u8;
+        self.data[addr + 1] = (val >> 8) as u8;
     }
 
     fn write_u32(&mut self, addr: usize, val: u32) {
@@ -94,9 +117,9 @@ impl MemRW for MemMod {
             todo!()
         }
 
-        self.data[addr] = (val & 0xff) as u8;
-        self.data[addr + 1] = (val & (0xff << 8)) as u8;
-        self.data[addr + 2] = (val & (0xff << 16)) as u8;
-        self.data[addr + 3] = (val & (0xff << 24)) as u8;
+        self.data[addr] = val as u8;
+        self.data[addr + 1] = (val >> 8) as u8;
+        self.data[addr + 2] = (val >> 16) as u8;
+        self.data[addr + 3] = (val >> 24) as u8;
     }
 }
