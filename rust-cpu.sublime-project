@@ -1,0 +1,27 @@
+{
+	"folders":
+	[
+		{
+			"path": ".",
+		}
+	],
+	"debugger_configurations":
+	[
+		{
+			"name": "Cargo Debug",
+			"type": "lldb",
+			"request": "launch",
+			"cargo": {
+				"args": [
+					"build",
+				],
+				"env": {},
+				"problemMatcher": "$rustc",
+				"filter": {
+					"kind": "bin"
+				}
+			},
+			"program": "${project_path}/target/debug/rust_cpu"
+		}
+	],
+}
