@@ -2,4 +2,4 @@
 
 pub mod rv32i;
 pub mod rvcore;
-pub mod asm;
+pub mod macros;

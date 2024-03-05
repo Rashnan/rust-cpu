@@ -15,7 +15,9 @@
 				"args": [
 					"build",
 				],
-				"env": {},
+				"env": {
+					"RUST_BACKTRACE": "1",
+				},
 				"problemMatcher": "$rustc",
 				"filter": {
 					"kind": "bin"

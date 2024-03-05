@@ -7,7 +7,10 @@ use crate::rvcore::{EeiCore, MemRW};
 
 type XTYPE = u32;
 type ITYPE = i32;
-// const XLEN: usize = 32;
+const XLEN: usize = 32;
+
+const INST_MISASLIGN: u32 = (XLEN as u32 >> 3) - 1;
+const INST_MISALIGN_EXCL0: u32 = INST_MISASLIGN & (((-1 as ITYPE) as XTYPE) << 1);
 
 // common instruction types
 
@@ -198,7 +201,7 @@ impl Inst for XTYPE {
             rs1: self.bit_range(15..20),
             rs2: self.bit_range(20..25),
             imm_10_5: self.bit_range(25..31),
-            imm_12: self.bit(32) as XTYPE
+            imm_12: self.bit(31) as XTYPE
         }
     }
 
@@ -217,49 +220,7 @@ impl Inst for XTYPE {
             imm_19_12: self.bit_range(12..20),
             imm11: self.bit(20) as XTYPE,
             imm_10_1: self.bit_range(21..31),
-            imm20: self.bit(32) as XTYPE
-        }
-    }
-}
-
-// less common instruction derivatives
-
-pub struct InstFence {
-    pub opcode: XTYPE,
-    pub rd: XTYPE,
-    pub funct3: XTYPE,
-    pub rs1: XTYPE,
-    pub sw: bool,
-    pub sr: bool,
-    pub so: bool,
-    pub si: bool,
-    pub pw: bool,
-    pub pr: bool,
-    pub po: bool,
-    pub pi: bool,
-    pub fm: XTYPE
-}
-
-pub trait InstFenceTrait {
-    fn inst_fence(&self) -> InstFence;
-}
-
-impl InstFenceTrait for XTYPE {
-    fn inst_fence(&self) -> InstFence {
-        InstFence {
-            opcode: self.bit_range(0..7),
-            rd: self.bit_range(7..12),
-            funct3: self.bit_range(12..15),
-            rs1: self.bit_range(15..20),
-            sw: self.bit(20),
-            sr: self.bit(21),
-            so: self.bit(22),
-            si: self.bit(23),
-            pw: self.bit(24),
-            pr: self.bit(25),
-            po: self.bit(26),
-            pi: self.bit(27),
-            fm: self.bit_range(28..32) as XTYPE
+            imm20: self.bit(31) as XTYPE
         }
     }
 }
@@ -335,7 +296,7 @@ enum_from_primitive!{
         ORI=0b110,
         ANDI=0b111,
         SLLI=0b001,
-        SXLI=0b101,
+        SRXI=0b101,
     }
 }
 
@@ -453,7 +414,7 @@ impl EeiCore for RefMod {
                     OpcodeOpImm::ORI => self.ori(inst),
                     OpcodeOpImm::ANDI => self.andi(inst),
                     OpcodeOpImm::SLLI => self.slli(inst),
-                    OpcodeOpImm::SXLI => {
+                    OpcodeOpImm::SRXI => {
                         if inst.imm_11_0.bit(11) {
                             self.srai(inst)
                         }
@@ -493,7 +454,7 @@ impl EeiCore for RefMod {
                 true
             },
             Opcodes::MiscMem => {
-                self.fence(inst.inst_fence());
+                self.fence(inst.inst_i());
                 true
             },
             Opcodes::System => {
@@ -570,7 +531,7 @@ pub trait RefTrait32 {
         [addi, slti, sltiu, xori, ori, andi] = InstI,// 0b0010011
         [slli, srli, srai] = InstI,// 0b0010011
         [add, sub, sll, slt, sltu, xor, srl, sra, or, and] = InstR,// 0b0110011
-        fence=  InstFence,// 0b0001111
+        fence=  InstI,// 0b0001111
         ecall=  InstI,// 0b1110011
         ebreak= InstI,// 0b1110011
     );
@@ -591,7 +552,7 @@ impl RefTrait32 for RefMod {
 
     fn jal(&mut self, inst: InstJ) {
         let off = inst.imm();
-        if off & 0b11 != 0 {
+        if off & INST_MISASLIGN != 0 {
             // instruction-address-misaligned exception
             todo!()
         }
@@ -605,9 +566,9 @@ impl RefTrait32 for RefMod {
     }
 
     fn jalr(&mut self, inst: InstI) {
-        let mut addr = inst.imm() + inst.rs1;
+        let mut addr = self.regs[inst.rs1 as usize] + inst.imm();
         // last bit does not matter as it will be set 0
-        if addr & 0b10 == 0 {
+        if addr & INST_MISALIGN_EXCL0 != 0 {
             // instruction-address-misaligned exception
             todo!()
         }
@@ -645,7 +606,7 @@ impl RefTrait32 for RefMod {
     fn beq(&mut self, inst: InstB) {
         if inst.rs1 == inst.rs2 {
             let off = inst.imm();
-            if off & 0b11 != 0 {
+            if off & INST_MISASLIGN != 0 {
                 // instruction-address-misaligned exception
                 todo!()
             }
@@ -656,7 +617,7 @@ impl RefTrait32 for RefMod {
     fn bne(&mut self, inst: InstB) {
         if inst.rs1 != inst.rs2 {
             let off = inst.imm();
-            if off & 0b11 != 0 {
+            if off & INST_MISASLIGN != 0 {
                 // instruction-address-misaligned exception
                 todo!()
             }
@@ -667,7 +628,7 @@ impl RefTrait32 for RefMod {
     fn blt(&mut self, inst: InstB) {
         if (inst.rs1 as ITYPE) < (inst.rs2 as ITYPE) {
             let off = inst.imm();
-            if off & 0b11 != 0 {
+            if off & INST_MISASLIGN != 0 {
                 // instruction-address-misaligned exception
                 todo!()
             }
@@ -678,7 +639,7 @@ impl RefTrait32 for RefMod {
     fn bge(&mut self, inst: InstB) {
         if (inst.rs1 as ITYPE) >= (inst.rs2 as ITYPE) {
             let off = inst.imm();
-            if off & 0b11 != 0 {
+            if off & INST_MISASLIGN != 0 {
                 // instruction-address-misaligned exception
                 todo!()
             }
@@ -689,7 +650,7 @@ impl RefTrait32 for RefMod {
     fn bltu(&mut self, inst: InstB) {
         if inst.rs1 < inst.rs2 {
             let off = inst.imm();
-            if off & 0b11 != 0 {
+            if off & INST_MISASLIGN != 0 {
                 // instruction-address-misaligned exception
                 todo!()
             }
@@ -700,7 +661,7 @@ impl RefTrait32 for RefMod {
     fn bgeu(&mut self, inst: InstB) {
         if inst.rs1 >= inst.rs2 {
             let off = inst.imm();
-            if off & 0b11 != 0 {
+            if off & INST_MISASLIGN != 0 {
                 // instruction-address-misaligned exception
                 todo!()
             }
@@ -713,7 +674,7 @@ impl RefTrait32 for RefMod {
             // saving to x0
             todo!()
         }
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         self.regs[inst.rd as usize] = self.mem.borrow().read_u8(addr as usize) as i8 as XTYPE;
     }
 
@@ -722,7 +683,7 @@ impl RefTrait32 for RefMod {
             // saving to x0
             todo!()
         }
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         self.regs[inst.rd as usize] = self.mem.borrow().read_u16(addr as usize) as i16 as XTYPE;
     }
 
@@ -731,7 +692,7 @@ impl RefTrait32 for RefMod {
             // saving to x0
             todo!()
         }
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         self.regs[inst.rd as usize] = self.mem.borrow().read_u32(addr as usize) as i32 as XTYPE;
     }
 
@@ -740,7 +701,7 @@ impl RefTrait32 for RefMod {
             // saving to x0
             todo!()
         }
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         self.regs[inst.rd as usize] = self.mem.borrow().read_u8(addr as usize) as u8 as XTYPE;
     }
 
@@ -749,24 +710,24 @@ impl RefTrait32 for RefMod {
             // saving to x0
             todo!()
         }
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         self.regs[inst.rd as usize] = self.mem.borrow().read_u16(addr as usize) as u16 as XTYPE;
     }
 
     fn sb(&mut self, inst: InstS) {
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         self.mem.borrow_mut().write_u8(addr as usize, (self.regs[inst.rs2 as usize] & 0xff) as u8);
     }
 
     fn sh(&mut self, inst: InstS) {
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         let hw = (self.regs[inst.rs2 as usize] & 0xff) as u16 +
             (self.regs[inst.rs2 as usize] & (0xff << 8)) as u16;
         self.mem.borrow_mut().write_u16(addr as usize, hw);
     }
 
     fn sw(&mut self, inst: InstS) {
-        let addr = inst.rs1 + inst.imm();
+        let addr = self.regs[inst.rs1 as usize] + inst.imm();
         let w = (self.regs[inst.rs2 as usize] & 0xff) as u32 +
             (self.regs[inst.rs2 as usize] & (0xff << 8)) as u32 + 
             (self.regs[inst.rs2 as usize] & (0xff << 16)) as u32 + 
@@ -869,10 +830,11 @@ impl RefTrait32 for RefMod {
         self.regs[inst.rd as usize] = self.regs[inst.rs1 as usize] & self.regs[inst.rs2 as usize];
     }
 
-    fn fence(&mut self, inst: InstFence) {
-        let pred = inst.pi | inst.po | inst.pr | inst.pw;
-        let succ = inst.si | inst.so | inst.sr | inst.sw;
-        hint_if!("Fence", !pred || !succ);
+    fn fence(&mut self, inst: InstI) {
+        let imm = inst.imm();
+        let succ = imm.bit_range(0..4);
+        let pred = imm.bit_range(4..8);
+        hint_if!("Fence", pred == 0 || succ == 0);
         todo!();
     }
 

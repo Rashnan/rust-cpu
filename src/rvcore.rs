@@ -2,6 +2,8 @@ use std::{cell::RefCell, rc::Rc, ops::Range};
 
 use crate::rv32i::RefMod;
 
+const MAX_COMPUTE: usize = 100;
+
 pub struct Eei {
     // main memory, or I/O
     pub mem: Rc<RefCell<MemMod>>,
@@ -18,20 +20,25 @@ impl Eei {
     }
 
     pub fn run(&mut self) {
-        while self.core.pc != u32::MAX {
-            self.exec()
+        let mut i = 0;
+        while self.core.pc != u32::MAX && i < MAX_COMPUTE {
+            self.exec(i);
+            i += 1;
         }
     }
 
     pub fn run_range(&mut self, rng: Range<u32>) {
-        while self.core.pc >= rng.start && self.core.pc < rng.end {
-            self.exec()
+        let mut i = 0;
+        while self.core.pc >= rng.start && self.core.pc < rng.end && i < MAX_COMPUTE {
+            self.exec(i);
+            i += 1;
         }
     }
 
-    pub fn exec(&mut self) {
+    pub fn exec(&mut self, count: usize) {
         let inst = self.mem.borrow().read_u32(self.core.pc as usize);
-        println!("{:02} -- {:09}", self.core.pc, inst);
+        println!("{:03}. {:02} -- {:09}", count, self.core.pc, inst);
+        
         self.core.pc += 4;
         if !self.core.trap(inst) {
             // check other extensions
