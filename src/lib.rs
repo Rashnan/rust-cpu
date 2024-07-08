@@ -3,3 +3,4 @@
 pub mod rv32i;
 pub mod rvcore;
 pub mod macros;
+pub mod assembler;

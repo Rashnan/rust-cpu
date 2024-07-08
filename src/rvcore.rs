@@ -21,7 +21,7 @@ impl Eei {
 
     pub fn run(&mut self) {
         let mut i = 0;
-        while self.core.pc != u32::MAX && i < MAX_COMPUTE {
+        while self.core.pc != u32::MAX - 1 && i < MAX_COMPUTE {
             self.exec(i);
             i += 1;
         }
@@ -39,10 +39,16 @@ impl Eei {
         let inst = self.mem.borrow().read_u32(self.core.pc as usize);
         println!("{:03}. {:02} -- {:09}", count, self.core.pc, inst);
         
-        self.core.pc += 4;
         if !self.core.trap(inst) {
             // check other extensions
             todo!()
+        }
+
+        if !self.core.branch {
+            self.core.pc += 4;
+        }
+        else {
+            self.core.branch = false;
         }
     }
 }
